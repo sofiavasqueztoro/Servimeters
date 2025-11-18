@@ -21,37 +21,39 @@ import time
 
 def crear_lead_en_dolibarr(titulo, detalle, telefono):
     """
-    Crea un Lead/Project en Dolibarr:
-    1) Crea el cliente (thirdparty) a partir del número de WhatsApp.
-    2) Crea el proyecto/oportunidad vinculado a ese cliente.
+    Crea un Prospect + Lead/Project en Dolibarr:
+    - Crea el thirdparty como prospecto
+    - Crea el proyecto/oportunidad con monto y probabilidad estimados
     """
-    # 1. Crear cliente en Dolibarr
+    # 1. Crear prospecto en Dolibarr
     thirdparty_id, nombre_cliente = crear_cliente_desde_whatsapp(telefono)
 
-    # 2. Preparar creación de proyecto/oportunidad
+    # 2. Preparar proyecto/oportunidad
     url = f"{DOLIBARR_API_URL}/projects"
     ref = "WHA-" + time.strftime("%Y%m%d-%H%M%S")
 
     meta = extraer_metadata(detalle)
-    probabilidad = 70 if meta["urgencia"] == "alta" else 40
 
     data = {
         "ref": ref,
         "title": titulo,
         "description": detalle,
-        "fk_statut": 1,
+        "fk_statut": 1,             # abierto/borrador
         "public": 1,
 
+        # Marcar como oportunidad
         "usage_opportunity": 1,
-        "opp_status": 1,
-        "opp_label": meta["tipo"],
-        "opp_percent": probabilidad,
+        "opp_status": 1,                               # abierta
+        "opp_label": meta["tipo"],                    # RETIE / INSPECCION / etc
+        "opp_amount": meta["monto_estimado"],         # <-- esto alimenta la tabla de leads
+        "opp_percent": meta["probabilidad"],          # <-- para weighted amount
 
+        # Localización básica
         "town": meta["ciudad"] or "",
         "date_start": int(time.time()),
     }
 
-    # Si logramos crear cliente, lo vinculamos
+    # Vincular prospecto si se creó bien
     if thirdparty_id is not None:
         data["fk_soc"] = thirdparty_id
 
@@ -75,6 +77,7 @@ def crear_lead_en_dolibarr(titulo, detalle, telefono):
     except Exception as e:
         print("Error al llamar /projects:", e)
         return None, ref, thirdparty_id, nombre_cliente
+
 
 def extraer_titulo_desde_mensaje(texto):
     """
@@ -104,29 +107,47 @@ def extraer_titulo_desde_mensaje(texto):
 
 def extraer_metadata(texto):
     """
-    A partir del mensaje de WhatsApp tratamos de detectar:
+    A partir del mensaje de WhatsApp detectamos:
     - tipo de servicio (RETIE, inspección, calibración, otro)
     - urgencia (normal / alta)
-    - ciudad (muy simplificado)
+    - ciudad
+    - monto estimado (para estadísticas de leads)
+    - probabilidad (para weighted amount)
     """
     t = texto.lower()
 
-    # Tipo de servicio
+    # Tipo de servicio + monto base
     if "retie" in t:
         tipo = "RETIE"
+        monto = 1_500_000
     elif "inspección" in t or "inspeccion" in t:
         tipo = "INSPECCION"
+        monto = 900_000
     elif "calibración" in t or "calibracion" in t:
         tipo = "CALIBRACION"
+        monto = 700_000
     else:
         tipo = "OTRO"
+        monto = 500_000  # valor genérico
 
     # Urgencia
     urgencia = "normal"
     if "urgente" in t or "lo antes posible" in t or "ya mismo" in t:
         urgencia = "alta"
 
-    # Ciudad (versión muy simple)
+    # Ajuste simple por urgencia (demo)
+    if urgencia == "alta":
+        monto = int(monto * 1.2)
+
+    # Probabilidad (para weighted amount)
+    if tipo == "RETIE":
+        prob = 80 if urgencia == "alta" else 70
+    elif tipo in ("INSPECCION", "CALIBRACION"):
+        prob = 70 if urgencia == "alta" else 60
+    else:
+        prob = 55 if urgencia == "alta" else 45
+
+    # Ciudad (versión simple)
     ciudad = None
     for c in ["bogotá", "bogota", "medellín", "medellin", "cali"]:
         if c in t:
@@ -136,12 +157,15 @@ def extraer_metadata(texto):
         "tipo": tipo,
         "urgencia": urgencia,
         "ciudad": ciudad,
+        "monto_estimado": monto,
+        "probabilidad": prob,
     }
+
 
 def crear_cliente_desde_whatsapp(telefono: str):
     """
-    Crea un 'Thirdparty' en Dolibarr tratado como PROSPECT
-    (no como cliente aún), a partir del número de WhatsApp.
+    Crea un 'Thirdparty' marcado como PROSPECT en Dolibarr
+    a partir del número de WhatsApp.
     """
     url = f"{DOLIBARR_API_URL}/thirdparties"
 
@@ -149,11 +173,8 @@ def crear_cliente_desde_whatsapp(telefono: str):
 
     data = {
         "name": nombre,
-        # En Dolibarr se usan flags distintos:
-        #   client   = 0  (no es cliente todavía)
-        #   prospect = 1  (es prospecto)
-        "client": 0,
-        "prospect": 1,
+        # client = 2  => Prospecto (no cliente todavía)
+        "client": 2,
         "phone": telefono
     }
 
@@ -178,6 +199,7 @@ def crear_cliente_desde_whatsapp(telefono: str):
     except Exception as e:
         print("Error al llamar /thirdparties:", e)
         return None, nombre
+
 
 
 
