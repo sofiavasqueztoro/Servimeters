@@ -204,100 +204,351 @@ def crear_cliente_desde_whatsapp(telefono: str):
 
 
 @app.route("/")
+@app.route("/")
 def chat():
-    # HTML completo con chat + panel de oportunidades
+    # HTML completo con chat tipo WhatsApp + panel de oportunidades
     html = """
     <html>
     <head>
         <title>WhatsApp ➜ ERP (Dolibarr)</title>
+        <meta charset="utf-8" />
         <style>
-            body { font-family: Arial, sans-serif; background:#f0f2f5; margin:0; padding:0; }
-            .topbar { background:#075E54; color:#fff; padding:10px 20px; font-size:18px; font-weight:bold; }
-            .container { display:flex; height:calc(100vh - 40px); }
-            .chat { flex:1; padding:20px; background:#ece5dd; display:flex; flex-direction:column; }
-            .header { font-size:18px; font-weight:bold; margin-bottom:10px; }
-            .messages { flex:1; overflow-y:auto; border-radius:10px; padding:10px; background:#fff; }
-            .msg { margin:5px 0; padding:8px 12px; border-radius:15px; max-width:70%; font-size:14px; }
-            .msg.client { background:#fff; align-self:flex-start; }
-            .msg.agent { background:#dcf8c6; align-self:flex-end; }
-            .sender { font-size:11px; color:#555; }
-            .input-area { margin-top:10px; display:flex; }
-            .input-area input { flex:1; padding:10px; border-radius:20px; border:1px solid #ccc; font-size:14px; }
-            .input-area button { margin-left:10px; padding:10px 20px; border:none; border-radius:20px; background:#25d366; color:#fff; font-weight:bold; cursor:pointer; }
-            .input-area button:hover { opacity:0.9; }
-            .sidebar { width:420px; background:#ffffff; padding:20px; border-left:1px solid #ddd; overflow-y:auto; }
-            .sidebar h2 { margin-top:0; }
-            .small { font-size:12px; color:#666; }
-            .opp { border-bottom:1px solid #eee; padding:8px 0; }
-            .opp-title { font-weight:bold; }
-            .tag { display:inline-block; font-size:11px; padding:2px 6px; border-radius:10px; background:#e0f7fa; margin-right:4px; }
-            .id-pill { display:inline-block; font-size:11px; padding:2px 6px; border-radius:10px; background:#ffe0b2; margin-left:4px; }
+            * { box-sizing: border-box; }
+
+            body {
+                margin: 0;
+                padding: 0;
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
+                background: #0a1014;
+                display: flex;
+                justify-content: center;
+                align-items: center;
+                height: 100vh;
+            }
+
+            .app-shell {
+                width: 1200px;
+                height: 90vh;
+                background: #111b21;
+                border-radius: 18px;
+                overflow: hidden;
+                box-shadow: 0 18px 45px rgba(0,0,0,0.6);
+                display: flex;
+                flex-direction: column;
+            }
+
+            .topbar {
+                background: linear-gradient(90deg,#075E54,#128C7E);
+                color: #fff;
+                padding: 10px 20px;
+                font-size: 16px;
+                font-weight: 600;
+                display: flex;
+                align-items: center;
+            }
+
+            .topbar span {
+                opacity: 0.9;
+            }
+
+            .container {
+                flex: 1;
+                display: flex;
+                background: #202c33;
+            }
+
+            /* LADO IZQUIERDO – WHATSAPP FAKE */
+            .chat-wrapper {
+                flex: 0.6;
+                padding: 18px;
+                display: flex;
+                justify-content: center;
+                align-items: center;
+            }
+
+            .phone {
+                width: 100%;
+                max-width: 480px;
+                height: 100%;
+                border-radius: 18px;
+                background: #0b141a;
+                display: flex;
+                flex-direction: column;
+                overflow: hidden;
+                border: 1px solid rgba(255,255,255,0.06);
+            }
+
+            .wa-header {
+                background: #202c33;
+                color: #e9edef;
+                padding: 10px 14px;
+                display: flex;
+                align-items: center;
+                gap: 10px;
+            }
+
+            .wa-avatar {
+                width: 32px;
+                height: 32px;
+                border-radius: 50%;
+                background: #00a884;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                color: #fff;
+                font-weight: 600;
+                font-size: 14px;
+            }
+
+            .wa-header-text {
+                display: flex;
+                flex-direction: column;
+            }
+
+            .wa-header-text .name {
+                font-size: 14px;
+                font-weight: 600;
+            }
+
+            .wa-header-text .status {
+                font-size: 11px;
+                color: #8696a0;
+            }
+
+            .chat-bg {
+                flex: 1;
+                background: #111b21 url("https://i.imgur.com/Oa7H0tC.png");
+                background-size: 350px;
+                display: flex;
+                flex-direction: column;
+                padding: 10px 12px;
+                overflow-y: auto;
+            }
+
+            .msg {
+                margin: 4px 0;
+                padding: 6px 10px 8px;
+                border-radius: 10px;
+                max-width: 75%;
+                font-size: 13px;
+                line-height: 1.4;
+                position: relative;
+                color: #e9edef;
+                word-wrap: break-word;
+            }
+
+            .msg.client {
+                background: #202c33;
+                align-self: flex-start;
+                border-bottom-left-radius: 0;
+            }
+
+            .msg.agent {
+                background: #005c4b;
+                align-self: flex-end;
+                border-bottom-right-radius: 0;
+            }
+
+            .sender {
+                font-size: 10px;
+                color: #8696a0;
+                margin-bottom: 2px;
+            }
+
+            .input-area-wrap {
+                padding: 8px 10px;
+                background: #202c33;
+                border-top: 1px solid #202c33;
+            }
+
+            .input-area {
+                display: flex;
+                gap: 8px;
+            }
+
+            .input-area input {
+                flex: 1;
+                padding: 10px 14px;
+                border-radius: 20px;
+                border: none;
+                outline: none;
+                font-size: 13px;
+                background: #202c33;
+                color: #e9edef;
+            }
+
+            .input-area input::placeholder {
+                color: #8696a0;
+            }
+
+            .input-area button {
+                padding: 0 20px;
+                border: none;
+                border-radius: 20px;
+                background: #00a884;
+                color: #fff;
+                font-weight: 600;
+                font-size: 13px;
+                cursor: pointer;
+            }
+
+            .input-area button:hover {
+                filter: brightness(1.05);
+            }
+
+            /* LADO DERECHO – ERP */
+            .sidebar {
+                flex: 0.4;
+                padding: 18px 20px;
+                background: #111b21;
+                border-left: 1px solid #202c33;
+                color: #e9edef;
+                display: flex;
+                flex-direction: column;
+                overflow: hidden;
+            }
+
+            .sidebar h2 {
+                margin: 0 0 4px;
+                font-size: 18px;
+            }
+
+            .sidebar h3 {
+                margin: 0 0 10px;
+                font-size: 14px;
+                font-weight: 500;
+                color: #8696a0;
+            }
+
+            .small {
+                font-size: 12px;
+                color: #8696a0;
+            }
+
+            .opp-list {
+                margin-top: 10px;
+                overflow-y: auto;
+            }
+
+            .opp {
+                border-radius: 10px;
+                background: #202c33;
+                padding: 10px 12px;
+                margin-bottom: 8px;
+            }
+
+            .opp-title {
+                font-weight: 600;
+                font-size: 13px;
+                margin-bottom: 4px;
+            }
+
+            .tag {
+                display: inline-block;
+                font-size: 11px;
+                padding: 2px 6px;
+                border-radius: 10px;
+                background:#202c33;
+                border: 1px solid #00a884;
+                color: #e9edef;
+                margin-right: 4px;
+            }
+
+            .id-pill {
+                display:inline-block;
+                font-size:11px;
+                padding:2px 6px;
+                border-radius:10px;
+                background:#ffe0b2;
+                color:#8a4f00;
+                margin-left:6px;
+            }
         </style>
     </head>
     <body>
-      <div class="topbar">Demo integración WhatsApp ➜ Middleware ➜ Dolibarr (ERP)</div>
-      <div class="container">
-        <div class="chat">
-          <div class="header">WhatsApp Business – Chat con Cliente</div>
-          <div class="messages">
+      <div class="app-shell">
+        <div class="topbar">
+          <span>Demo integración WhatsApp ➜ Middleware ➜ Dolibarr (ERP)</span>
+        </div>
+        <div class="container">
+
+          <!-- LADO WHATSAPP -->
+          <div class="chat-wrapper">
+            <div class="phone">
+              <div class="wa-header">
+                <div class="wa-avatar">C</div>
+                <div class="wa-header-text">
+                  <span class="name">Cliente WhatsApp</span>
+                  <span class="status">en línea</span>
+                </div>
+              </div>
+              <div class="chat-bg">
     """
 
     # Renderizar los mensajes del chat
     for m in messages:
         css_class = "client" if m["sender"] == "cliente" else "agent"
         html += f'''
-        <div class="msg {css_class}">
-            <div class="sender">{m["sender"].title()}</div>
-            {m["text"]}
-        </div>
+                <div class="msg {css_class}">
+                    <div class="sender">{m["sender"].title()}</div>
+                    {m["text"]}
+                </div>
         '''
 
     html += """
+              </div>
+              <div class="input-area-wrap">
+                <form method="POST" action="/send" class="input-area">
+                  <input type="text" name="text" placeholder="Escribe el mensaje del cliente..." autocomplete="off" required />
+                  <button type="submit">Enviar</button>
+                </form>
+              </div>
+            </div>
           </div>
-          <form method="POST" action="/send" class="input-area">
-            <input type="text" name="text" placeholder="Escribe el mensaje del cliente..." autocomplete="off" required />
-            <button type="submit">Enviar</button>
-          </form>
-        </div>
 
-        <div class="sidebar">
-          <h2>ERP / CRM – Oportunidades (Dolibarr)</h2>
-          <p class="small">
-            Cada mensaje que entra por el canal de WhatsApp Business se transforma automáticamente
-            en una <b>oportunidad de prospecto</b> dentro del ERP (Dolibarr), a través de un middleware
-            que mapea los datos y llama a la API REST.
-          </p>
+          <!-- LADO ERP -->
+          <div class="sidebar">
+            <h2>ERP / CRM – Oportunidades</h2>
+            <h3>Dolibarr (Proyectos tipo lead)</h3>
+            <p class="small">
+              Cada mensaje que entra por el canal de WhatsApp Business se transforma automáticamente
+              en una <b>oportunidad de prospecto</b> dentro del ERP, a través del middleware.
+            </p>
+
+            <div class="opp-list">
     """
 
-    # Panel derecho: oportunidades
     if not opportunities:
         html += "<p class='small'>Todavía no hay oportunidades creadas.</p>"
     else:
         for i, o in enumerate(opportunities, start=1):
             _id = o.get("id")
             html += f"""
-            <div class="opp">
-              <div class="opp-title">
-                Oportunidad #{i}: {o['title']}
-                {f"<span class='id-pill'>ID Dolibarr: {_id}</span>" if _id else ""}
+              <div class="opp">
+                <div class="opp-title">
+                  Oportunidad #{i}: {o['title']}
+                  {f"<span class='id-pill'>ID Dolibarr: {_id}</span>" if _id else ""}
+                </div>
+                <div class="small">Prospecto: {o['customer']}</div>
+                <div class="small">Detalle: {o['detail']}</div>
+                <div class="small" style="margin-top:6px;">
+                  <span class="tag">Canal: WhatsApp Business</span>
+                  <span class="tag">Estado: Prospecto</span>
+                </div>
               </div>
-              <div class="small">Prospecto: {o['customer']}</div>
-              <div class="small">Detalle: {o['detail']}</div>
-              <div class="small">
-                <span class="tag">Canal: WhatsApp Business</span>
-                <span class="tag">Estado: Prospecto</span>
-              </div>
-            </div>
             """
 
     html += """
+            </div>
+          </div>
+
         </div>
       </div>
     </body>
     </html>
     """
-
     return html
+
 
 
 @app.route("/send", methods=["POST"])
