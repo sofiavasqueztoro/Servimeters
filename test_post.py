@@ -1,7 +1,7 @@
 import requests
 
 API_URL = "http://localhost/dolibarr/api/index.php/opportunities"
-API_KEY = "A6IZFp4qcTeQ2mu6Kz42jT45Song9Q3E"
+API_KEY = "66ec83dd4fc6458efe534932a3eb46e54583b6e7"
 
 def crear_oportunidad_en_dolibarr(titulo, mensaje):
     data = {

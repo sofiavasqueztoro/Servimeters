@@ -8,7 +8,7 @@ app = Flask(__name__)
 # =========================
 DOLIBARR_BASE_URL = "http://localhost/dolibarr"  # Cambia si tu ruta es diferente
 DOLIBARR_API_URL = f"{DOLIBARR_BASE_URL}/api/index.php"
-DOLI_API_KEY = "A6IZFp4qcTeQ2mu6Kz42jT45Song9Q3E"  # <-- Pega aquí tu API KEY de Dolibarr
+DOLI_API_KEY = "66ec83dd4fc6458efe534932a3eb46e54583b6e7"  # <-- Pega aquí tu API KEY de Dolibarr
 
 # =========================
 # "Base de datos" en memoria
@@ -19,21 +19,41 @@ opportunities = []  # oportunidades mostradas en el panel derecho
 
 import time
 
-def crear_lead_en_dolibarr(titulo, detalle):
+def crear_lead_en_dolibarr(titulo, detalle, telefono):
     """
-    Crea un Lead/Project en Dolibarr usando la API REST (/projects).
+    Crea un Lead/Project en Dolibarr:
+    1) Crea el cliente (thirdparty) a partir del número de WhatsApp.
+    2) Crea el proyecto/oportunidad vinculado a ese cliente.
     """
-    url = f"{DOLIBARR_API_URL}/projects"
+    # 1. Crear cliente en Dolibarr
+    thirdparty_id, nombre_cliente = crear_cliente_desde_whatsapp(telefono)
 
-    # Generamos una ref única tipo WHA-20241118-123456
+    # 2. Preparar creación de proyecto/oportunidad
+    url = f"{DOLIBARR_API_URL}/projects"
     ref = "WHA-" + time.strftime("%Y%m%d-%H%M%S")
+
+    meta = extraer_metadata(detalle)
+    probabilidad = 70 if meta["urgencia"] == "alta" else 40
 
     data = {
         "ref": ref,
         "title": titulo,
         "description": detalle,
-        "fk_statut": 1   # 1 = abierto / borrador
+        "fk_statut": 1,
+        "public": 1,
+
+        "usage_opportunity": 1,
+        "opp_status": 1,
+        "opp_label": meta["tipo"],
+        "opp_percent": probabilidad,
+
+        "town": meta["ciudad"] or "",
+        "date_start": int(time.time()),
     }
+
+    # Si logramos crear cliente, lo vinculamos
+    if thirdparty_id is not None:
+        data["fk_soc"] = thirdparty_id
 
     headers = {
         "DOLAPIKEY": DOLI_API_KEY,
@@ -43,16 +63,18 @@ def crear_lead_en_dolibarr(titulo, detalle):
     try:
         resp = requests.post(url, json=data, headers=headers, timeout=5)
         print("Dolibarr /projects →", resp.status_code, resp.text)
-        if resp.status_code == 200:
-            try:
-                return resp.json().get("id"), ref
-            except Exception:
-                return None, ref
-        else:
-            return None, ref
+        resp.raise_for_status()
+
+        try:
+            project_id = int(resp.text.strip())
+        except ValueError:
+            project_id = None
+
+        return project_id, ref, thirdparty_id, nombre_cliente
+
     except Exception as e:
         print("Error al llamar /projects:", e)
-        return None, ref
+        return None, ref, thirdparty_id, nombre_cliente
 
 def extraer_titulo_desde_mensaje(texto):
     """
@@ -79,6 +101,84 @@ def extraer_titulo_desde_mensaje(texto):
         resumen = texto
 
     return f"{base} – {resumen}"
+
+def extraer_metadata(texto):
+    """
+    A partir del mensaje de WhatsApp tratamos de detectar:
+    - tipo de servicio (RETIE, inspección, calibración, otro)
+    - urgencia (normal / alta)
+    - ciudad (muy simplificado)
+    """
+    t = texto.lower()
+
+    # Tipo de servicio
+    if "retie" in t:
+        tipo = "RETIE"
+    elif "inspección" in t or "inspeccion" in t:
+        tipo = "INSPECCION"
+    elif "calibración" in t or "calibracion" in t:
+        tipo = "CALIBRACION"
+    else:
+        tipo = "OTRO"
+
+    # Urgencia
+    urgencia = "normal"
+    if "urgente" in t or "lo antes posible" in t or "ya mismo" in t:
+        urgencia = "alta"
+
+    # Ciudad (versión muy simple)
+    ciudad = None
+    for c in ["bogotá", "bogota", "medellín", "medellin", "cali"]:
+        if c in t:
+            ciudad = c.title()
+
+    return {
+        "tipo": tipo,
+        "urgencia": urgencia,
+        "ciudad": ciudad,
+    }
+
+def crear_cliente_desde_whatsapp(telefono: str):
+    """
+    Crea un 'Thirdparty' en Dolibarr tratado como PROSPECT
+    (no como cliente aún), a partir del número de WhatsApp.
+    """
+    url = f"{DOLIBARR_API_URL}/thirdparties"
+
+    nombre = f"Prospecto WhatsApp {telefono}"
+
+    data = {
+        "name": nombre,
+        # En Dolibarr se usan flags distintos:
+        #   client   = 0  (no es cliente todavía)
+        #   prospect = 1  (es prospecto)
+        "client": 0,
+        "prospect": 1,
+        "phone": telefono
+    }
+
+    headers = {
+        "DOLAPIKEY": DOLI_API_KEY,
+        "Content-Type": "application/json",
+        "Accept": "application/json"
+    }
+
+    try:
+        resp = requests.post(url, json=data, headers=headers, timeout=5)
+        print("Dolibarr /thirdparties →", resp.status_code, resp.text)
+        resp.raise_for_status()
+
+        try:
+            thirdparty_id = int(resp.text.strip())
+        except ValueError:
+            thirdparty_id = None
+
+        return thirdparty_id, nombre
+
+    except Exception as e:
+        print("Error al llamar /thirdparties:", e)
+        return None, nombre
+
 
 
 @app.route("/")
@@ -142,11 +242,12 @@ def chat():
           <h2>ERP / CRM – Oportunidades (Dolibarr)</h2>
           <p class="small">
             Cada mensaje que entra por el canal de WhatsApp Business se transforma automáticamente
-            en una oportunidad dentro del ERP (Dolibarr), a través de un middleware que mapea los datos
-            y llama a la API REST.
+            en una <b>oportunidad de prospecto</b> dentro del ERP (Dolibarr), a través de un middleware
+            que mapea los datos y llama a la API REST.
           </p>
     """
 
+    # Panel derecho: oportunidades
     if not opportunities:
         html += "<p class='small'>Todavía no hay oportunidades creadas.</p>"
     else:
@@ -158,7 +259,7 @@ def chat():
                 Oportunidad #{i}: {o['title']}
                 {f"<span class='id-pill'>ID Dolibarr: {_id}</span>" if _id else ""}
               </div>
-              <div class="small">Cliente: {o['customer']}</div>
+              <div class="small">Prospecto: {o['customer']}</div>
               <div class="small">Detalle: {o['detail']}</div>
               <div class="small">
                 <span class="tag">Canal: WhatsApp Business</span>
@@ -180,7 +281,7 @@ def chat():
 @app.route("/send", methods=["POST"])
 def send():
     """
-    Cuando el "cliente" envía un mensaje en el WhatsApp,
+    Cuando el 'cliente' envía un mensaje en el WhatsApp,
     lo guardamos en el chat y creamos una oportunidad en Dolibarr.
     """
     text = request.form.get("text", "").strip()
@@ -191,21 +292,31 @@ def send():
         # 2. Generar título de la oportunidad (motor de reglas simple)
         titulo = extraer_titulo_desde_mensaje(text)
 
-        # 3. Crear lead/proyecto en Dolibarr vía API REST
-        dolibarr_id, ref = crear_lead_en_dolibarr(titulo, text)
+        # Para el prototipo usamos un único número fijo
+        telefono = "+57 318 302 1160"
+
+        # 3. Crear prospecto + proyecto en Dolibarr vía API REST
+        dolibarr_id, ref, thirdparty_id, nombre_cliente = crear_lead_en_dolibarr(
+            titulo,
+            text,
+            telefono
+        )
 
         # 4. Guardar también en la "base" local para mostrar en el panel derecho
         opportunity = {
             "title": titulo,
-            "customer": "Cliente WhatsApp +57 318 302 1160",
+            "customer": nombre_cliente,      # se muestra como Prospecto
             "detail": text,
             "id": dolibarr_id,
-            "ref": ref
+            "ref": ref,
+            "thirdparty_id": thirdparty_id,
+            "phone": telefono,
         }
         opportunities.append(opportunity)
 
-
     return redirect("/")
+
+
 
 
 if __name__ == "__main__":
