@@ -1,109 +1,72 @@
 from flask import Flask, request, redirect
 import requests
+import time
+import os
+from datetime import date, timedelta
+from requests_oauthlib import OAuth1
 
 app = Flask(__name__)
 
 # =========================
-# CONFIGURACIÓN DOLIBARR
+# CONFIGURACIÓN NETSUITE
 # =========================
-DOLIBARR_BASE_URL = "http://localhost/dolibarr"  # Cambia si tu ruta es diferente
-DOLIBARR_API_URL = f"{DOLIBARR_BASE_URL}/api/index.php"
-DOLI_API_KEY = "66ec83dd4fc6458efe534932a3eb46e54583b6e7"  # <-- Pega aquí tu API KEY de Dolibarr
+NETSUITE_BASE_URL = "https://5845631-sb1.suitetalk.api.netsuite.com"
+NETSUITE_OPPORTUNITY_URL = f"{NETSUITE_BASE_URL}/services/rest/record/v1/opportunity"
+NETSUITE_REALM = "5845631_SB1"
+
+# Idealmente estos vienen de variables de entorno
+NETSUITE_CONSUMER_KEY = os.getenv(
+    "NETSUITE_CONSUMER_KEY",
+    "4a61b925af4e317b76ba9441b67ef658193da355b17deb4bfe2a7f2cf9553f3f",
+)
+NETSUITE_CONSUMER_SECRET = os.getenv(
+    "NETSUITE_CONSUMER_SECRET",
+    "bf9c440ecb0b2c469cb1b6fd4f30f4f6c0ee2c24d04a543254e30fdedba5ce6b",
+)
+NETSUITE_ACCESS_TOKEN = os.getenv(
+    "NETSUITE_ACCESS_TOKEN",
+    "32ff928e651fdfb7e9507d603b2d1956c78766a976497af1cbac4d5b466b9014",
+)
+NETSUITE_TOKEN_SECRET = os.getenv(
+    "NETSUITE_TOKEN_SECRET",
+    "5fc663a15998663e0b5f742b99501cafb00c2d8dd0ca4c9e0cbb8cb01d1af5d5",
+)
 
 # =========================
 # "Base de datos" en memoria
 # =========================
-messages = []       # historial de chat
+messages = [
+    {
+        "sender": "agent",
+        "text": (
+            "👋 Bienvenido a Servimeters.\n\n"
+            "Por favor escribe primero el *nombre de tu empresa* y luego *lo que necesitas*.\n\n"
+            "Ejemplo: Soy **CORPORACIÓN UNIVERSITARIA DEL META** y necesito una "
+            "inspección RETIE para la sede de Villavicencio."
+        ),
+    }
+]  # historial de chat
 opportunities = []  # oportunidades mostradas en el panel derecho
 
 
-import time
+# =========================
+# HELPERS DE NEGOCIO
+# =========================
 
-def crear_lead_en_dolibarr(titulo, detalle, telefono):
+def extraer_titulo_desde_mensaje(texto, nombre_cliente=None):
     """
-    Crea un Prospect + Lead/Project en Dolibarr:
-    - Crea el thirdparty como prospecto
-    - Crea el proyecto/oportunidad con monto y probabilidad estimados
+    Genera un título limpio para la oportunidad.
+    Si llega nombre_cliente lo usa, si no, usa un título genérico.
     """
-    # 1. Crear prospecto en Dolibarr
-    thirdparty_id, nombre_cliente = crear_cliente_desde_whatsapp(telefono)
+    meta = extraer_metadata(texto)
+    tipo = meta["tipo"]  # RETIE, INSPECCION, etc.
 
-    # 2. Preparar proyecto/oportunidad
-    url = f"{DOLIBARR_API_URL}/projects"
-    ref = "WHA-" + time.strftime("%Y%m%d-%H%M%S")
-
-    meta = extraer_metadata(detalle)
-
-    data = {
-        "ref": ref,
-        "title": titulo,
-        "description": detalle,
-        "fk_statut": 1,             # abierto/borrador
-        "public": 1,
-
-        # Marcar como oportunidad
-        "usage_opportunity": 1,
-        "opp_status": 1,                               # abierta
-        "opp_label": meta["tipo"],                    # RETIE / INSPECCION / etc
-        "opp_amount": meta["monto_estimado"],         # <-- esto alimenta la tabla de leads
-        "opp_percent": meta["probabilidad"],          # <-- para weighted amount
-
-        # Localización básica
-        "town": meta["ciudad"] or "",
-        "date_start": int(time.time()),
-    }
-
-    # Vincular prospecto si se creó bien
-    if thirdparty_id is not None:
-        data["fk_soc"] = thirdparty_id
-
-    headers = {
-        "DOLAPIKEY": DOLI_API_KEY,
-        "Content-Type": "application/json"
-    }
-
-    try:
-        resp = requests.post(url, json=data, headers=headers, timeout=5)
-        print("Dolibarr /projects →", resp.status_code, resp.text)
-        resp.raise_for_status()
-
-        try:
-            project_id = int(resp.text.strip())
-        except ValueError:
-            project_id = None
-
-        return project_id, ref, thirdparty_id, nombre_cliente
-
-    except Exception as e:
-        print("Error al llamar /projects:", e)
-        return None, ref, thirdparty_id, nombre_cliente
-
-
-def extraer_titulo_desde_mensaje(texto):
-    """
-    Regla simple para generar el título de la oportunidad.
-    Aquí simulas el motor de reglas del middleware.
-    """
-    texto = texto.strip()
-
-    # Detectar algunos tipos típicos
-    lower = texto.lower()
-    if "retie" in lower:
-        base = "Certificación RETIE"
-    elif "inspección" in lower:
-        base = "Inspección eléctrica"
-    elif "calibración" in lower:
-        base = "Servicio de calibración"
+    if nombre_cliente:
+        return f"{tipo.title()} – {nombre_cliente}"
     else:
-        base = "Nueva oportunidad desde WhatsApp"
+        # compatibilidad con llamadas antiguas
+        return f"{tipo.title()} – Oportunidad desde WhatsApp"
 
-    # Añadir un pequeño recorte del mensaje
-    if len(texto) > 40:
-        resumen = texto[:40] + "..."
-    else:
-        resumen = texto
-
-    return f"{base} – {resumen}"
 
 def extraer_metadata(texto):
     """
@@ -111,12 +74,11 @@ def extraer_metadata(texto):
     - tipo de servicio (RETIE, inspección, calibración, otro)
     - urgencia (normal / alta)
     - ciudad
-    - monto estimado (para estadísticas de leads)
-    - probabilidad (para weighted amount)
+    - monto estimado
+    - probabilidad
     """
     t = texto.lower()
 
-    # Tipo de servicio + monto base
     if "retie" in t:
         tipo = "RETIE"
         monto = 1_500_000
@@ -128,18 +90,15 @@ def extraer_metadata(texto):
         monto = 700_000
     else:
         tipo = "OTRO"
-        monto = 500_000  # valor genérico
+        monto = 500_000
 
-    # Urgencia
     urgencia = "normal"
     if "urgente" in t or "lo antes posible" in t or "ya mismo" in t:
         urgencia = "alta"
 
-    # Ajuste simple por urgencia (demo)
     if urgencia == "alta":
         monto = int(monto * 1.2)
 
-    # Probabilidad (para weighted amount)
     if tipo == "RETIE":
         prob = 80 if urgencia == "alta" else 70
     elif tipo in ("INSPECCION", "CALIBRACION"):
@@ -147,7 +106,6 @@ def extraer_metadata(texto):
     else:
         prob = 55 if urgencia == "alta" else 45
 
-    # Ciudad (versión simple)
     ciudad = None
     for c in ["bogotá", "bogota", "medellín", "medellin", "cali"]:
         if c in t:
@@ -162,55 +120,197 @@ def extraer_metadata(texto):
     }
 
 
-def crear_cliente_desde_whatsapp(telefono: str):
-    """
-    Crea un 'Thirdparty' marcado como PROSPECT en Dolibarr
-    a partir del número de WhatsApp.
-    """
-    url = f"{DOLIBARR_API_URL}/thirdparties"
+# =========================
+# MAPEO SIMPLE CLIENTE / SALES REP (para pruebas)
+# =========================
 
-    nombre = f"Prospecto WhatsApp {telefono}"
+TEST_CLIENTES = {
+    # keyword_en_texto: (id, nombre)
+    "uniciencia": ("204201", "66475 Corporación Universitaria de Ciencia y Desarrollo UNICIENCIA"),
+    "meta": ("98163", "40299 CORPORACION UNIVERSITARIA DEL META"),
+    "crepes": ("98170", "40306 CREPES Y WAFFLES"),
+    "daflor": ("96118", "39439 DAFLOR"),
+    "alarm": ("97856", "39993 ALARMAC LTDA"),
+}
 
-    data = {
-        "name": nombre,
-        # client = 2  => Prospecto (no cliente todavía)
-        "client": 2,
-        "phone": telefono
+TEST_SALES_REP = {
+    "adriana": ("104048", "ADRIANA CAROLINA BUSTOS BUSTOS"),
+    "ana": ("128855", "ANA CATERINE GOMEZ CASTILLO"),
+    "andrea": ("224", "ANDREA SERRANO CORONADO"),
+}
+
+
+def extraer_nombre_cliente_desde_texto(texto: str):
+    """
+    Intenta extraer el nombre de la empresa cuando el cliente escribe algo como:
+    'Hola, soy CORPORACIÓN UNIVERSITARIA DEL META y necesito...'
+    """
+    t = texto.strip()
+    lower = t.lower()
+
+    if "soy " in lower:
+        idx = lower.find("soy ")
+        nombre = t[idx + 4 :]  # lo que viene después de 'soy '
+
+        # Cortar donde empiezan otras frases típicas
+        for sep in [" y ", " quiero", " necesito", " requiero", ",", "."]:
+            pos = nombre.lower().find(sep)
+            if pos != -1:
+                nombre = nombre[:pos]
+
+        return nombre.strip().upper()
+
+    return None
+
+
+def detectar_cliente_desde_mensaje(texto):
+    """
+    Si coincide con un cliente de pruebas → devuelve (id, nombre).
+    Si no, intenta extraer el nombre del texto y devuelve (None, nombre_deducido).
+    """
+    t = texto.lower()
+    for keyword, (cid, nombre) in TEST_CLIENTES.items():
+        if keyword in t:
+            return cid, nombre
+
+    nombre_deducido = extraer_nombre_cliente_desde_texto(texto) or "PROSPECTO WHATSAPP"
+    return None, nombre_deducido
+
+
+def detectar_sales_rep_desde_mensaje(texto):
+    t = texto.lower()
+    for keyword, (rid, nombre) in TEST_SALES_REP.items():
+        if keyword in t:
+            return rid, nombre
+    # fallback: primera vendedora
+    rid, nombre = next(iter(TEST_SALES_REP.values()))
+    return rid, nombre
+
+
+# =========================
+# INTEGRACIÓN NETSUITE
+# =========================
+
+def _netsuite_auth():
+    return OAuth1(
+        NETSUITE_CONSUMER_KEY,
+        client_secret=NETSUITE_CONSUMER_SECRET,
+        resource_owner_key=NETSUITE_ACCESS_TOKEN,
+        resource_owner_secret=NETSUITE_TOKEN_SECRET,
+        signature_method="HMAC-SHA256",
+        realm=NETSUITE_REALM,
+    )
+
+
+def crear_cliente_en_netsuite(nombre_cliente: str):
+    """
+    Crea un Customer sencillo en NetSuite.
+    """
+    url = f"{NETSUITE_BASE_URL}/services/rest/record/v1/customer"
+
+    body = {
+        "companyName": nombre_cliente,
     }
 
     headers = {
-        "DOLAPIKEY": DOLI_API_KEY,
         "Content-Type": "application/json",
-        "Accept": "application/json"
+        "Prefer": "transient",
     }
 
     try:
-        resp = requests.post(url, json=data, headers=headers, timeout=5)
-        print("Dolibarr /thirdparties →", resp.status_code, resp.text)
+        resp = requests.post(url, json=body, headers=headers, auth=_netsuite_auth(), timeout=10)
+        print("NetSuite /customer →", resp.status_code, resp.text)
         resp.raise_for_status()
 
-        try:
-            thirdparty_id = int(resp.text.strip())
-        except ValueError:
-            thirdparty_id = None
+        data = resp.json()
+        customer_id = data.get("id") or data.get("internalId")
+        return customer_id
+    except Exception as e:
+        print("Error al crear cliente en NetSuite:", e)
+        return None
 
-        return thirdparty_id, nombre
+
+def crear_oportunidad_en_netsuite(titulo, detalle, telefono):
+    """
+    Crea una Opportunity en NetSuite via REST.
+    Si el cliente no existe en la base de pruebas, lo crea primero como Customer.
+    """
+    meta = extraer_metadata(detalle)
+
+    # 1. Detectar cliente
+    entity_id, nombre_cliente = detectar_cliente_desde_mensaje(detalle)
+
+    # 2. Si no tenemos ID de cliente, crearlo en NetSuite
+    if entity_id is None:
+        entity_id = crear_cliente_en_netsuite(nombre_cliente)
+        if entity_id is None:
+            # No se pudo crear el cliente -> abortamos creación de oportunidad
+            print("No se pudo crear el cliente, no se crea la oportunidad.")
+            return None, None, nombre_cliente
+
+    # 3. Detectar sales rep
+    sales_rep_id, _ = detectar_sales_rep_desde_mensaje(detalle)
+
+    # Fecha de cierre prevista: hoy + 15 días (ejemplo)
+    expected_close = (date.today() + timedelta(days=15)).isoformat()
+
+    body = {
+        "entity": {"id": entity_id},
+        "title": titulo,
+        "memo": detalle,
+        "probability": meta["probabilidad"],
+        "expectedCloseDate": expected_close,
+        "projectedTotal": meta["monto_estimado"],
+        "salesRep": {"id": sales_rep_id},
+        # Campos custom del ejemplo (ponlos como necesites)
+        "custbody_sm_clasificacion_negocio": 13,
+        "custbodysm_origen_de_prospecto": 17,
+        "custbody_sm_lin_negocio": 1,
+        "custbody_sm_subl_negocio": 3,
+    }
+
+    headers = {
+        "Content-Type": "application/json",
+        "Prefer": "transient",
+    }
+
+    try:
+        resp = requests.post(
+            NETSUITE_OPPORTUNITY_URL,
+            json=body,
+            headers=headers,
+            auth=_netsuite_auth(),
+            timeout=10,
+        )
+        print("NetSuite /opportunity →", resp.status_code, resp.text)
+        resp.raise_for_status()
+
+        opportunity_id = None
+        try:
+            data = resp.json()
+            # NetSuite suele devolver "id" o "internalId" según la versión/record
+            opportunity_id = data.get("id") or data.get("internalId")
+        except ValueError:
+            opportunity_id = None
+
+        return opportunity_id, entity_id, nombre_cliente
 
     except Exception as e:
-        print("Error al llamar /thirdparties:", e)
-        return None, nombre
+        print("Error al llamar NetSuite /opportunity:", e)
+        return None, entity_id, nombre_cliente
 
 
+# =========================
+# VISTA WEB (CHAT + PANEL)
+# =========================
 
-
-@app.route("/")
 @app.route("/")
 def chat():
     # HTML completo con chat tipo WhatsApp + panel de oportunidades
     html = """
     <html>
     <head>
-        <title>WhatsApp ➜ ERP (Dolibarr)</title>
+        <title>WhatsApp ➜ ERP (NetSuite)</title>
         <meta charset="utf-8" />
         <style>
             * { box-sizing: border-box; }
@@ -468,7 +568,7 @@ def chat():
     <body>
       <div class="app-shell">
         <div class="topbar">
-          <span>Demo integración WhatsApp ➜ Middleware ➜ Dolibarr (ERP)</span>
+          <span>Demo integración WhatsApp ➜ Middleware ➜ NetSuite (ERP)</span>
         </div>
         <div class="container">
 
@@ -499,7 +599,13 @@ def chat():
               </div>
               <div class="input-area-wrap">
                 <form method="POST" action="/send" class="input-area">
-                  <input type="text" name="text" placeholder="Escribe el mensaje del cliente..." autocomplete="off" required />
+                  <input
+                    type="text"
+                    name="text"
+                    placeholder="Ej: Soy CORPORACIÓN UNIVERSITARIA DEL META y necesito una inspección RETIE para la sede de Villavicencio"
+                    autocomplete="off"
+                    required
+                  />
                   <button type="submit">Enviar</button>
                 </form>
               </div>
@@ -509,10 +615,10 @@ def chat():
           <!-- LADO ERP -->
           <div class="sidebar">
             <h2>ERP / CRM – Oportunidades</h2>
-            <h3>Dolibarr (Proyectos tipo lead)</h3>
+            <h3>NetSuite (Opportunities)</h3>
             <p class="small">
               Cada mensaje que entra por el canal de WhatsApp Business se transforma automáticamente
-              en una <b>oportunidad de prospecto</b> dentro del ERP, a través del middleware.
+              en una <b>oportunidad</b> dentro de NetSuite, a través del middleware.
             </p>
 
             <div class="opp-list">
@@ -527,7 +633,7 @@ def chat():
               <div class="opp">
                 <div class="opp-title">
                   Oportunidad #{i}: {o['title']}
-                  {f"<span class='id-pill'>ID Dolibarr: {_id}</span>" if _id else ""}
+                  {f"<span class='id-pill'>ID NetSuite: {_id}</span>" if _id else ""}
                 </div>
                 <div class="small">Prospecto: {o['customer']}</div>
                 <div class="small">Detalle: {o['detail']}</div>
@@ -550,39 +656,36 @@ def chat():
     return html
 
 
-
 @app.route("/send", methods=["POST"])
 def send():
-    """
-    Cuando el 'cliente' envía un mensaje en el WhatsApp,
-    lo guardamos en el chat y creamos una oportunidad en Dolibarr.
-    """
     text = request.form.get("text", "").strip()
     if text:
         # 1. Guardar mensaje en el chat simulado
         messages.append({"sender": "cliente", "text": text})
 
-        # 2. Generar título de la oportunidad (motor de reglas simple)
-        titulo = extraer_titulo_desde_mensaje(text)
-
         # Para el prototipo usamos un único número fijo
         telefono = "+57 318 302 1160"
 
-        # 3. Crear prospecto + proyecto en Dolibarr vía API REST
-        dolibarr_id, ref, thirdparty_id, nombre_cliente = crear_lead_en_dolibarr(
+        # 2. Detectar cliente para usar el nombre en el título
+        _, nombre_cliente_detectado = detectar_cliente_desde_mensaje(text)
+
+        # 3. Generar título de la oportunidad usando tipo + nombre cliente
+        titulo = extraer_titulo_desde_mensaje(text, nombre_cliente_detectado)
+
+        # 4. Crear oportunidad en NetSuite vía API REST
+        netsuite_id, entity_id, nombre_cliente = crear_oportunidad_en_netsuite(
             titulo,
             text,
-            telefono
+            telefono,
         )
 
-        # 4. Guardar también en la "base" local para mostrar en el panel derecho
+        # 5. Guardar también en la "base" local para mostrar en el panel derecho
         opportunity = {
             "title": titulo,
-            "customer": nombre_cliente,      # se muestra como Prospecto
+            "customer": nombre_cliente,
             "detail": text,
-            "id": dolibarr_id,
-            "ref": ref,
-            "thirdparty_id": thirdparty_id,
+            "id": netsuite_id,
+            "ref": entity_id,
             "phone": telefono,
         }
         opportunities.append(opportunity)
@@ -590,8 +693,5 @@ def send():
     return redirect("/")
 
 
-
-
 if __name__ == "__main__":
-    # debug=True solo para desarrollo
     app.run(debug=True)
